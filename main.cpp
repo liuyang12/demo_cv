@@ -117,9 +117,12 @@ void findgate(int i)
     char file_name[256], source_name[127], thinned_name[127], txt[127];
 //    if(i > END_NUM)
 //        i = END_NUM;
-    std::sprintf(file_name, "/home/young/文档/test_pics/bmp.for_as/bmp_for_all/color_classified/frame%04d.bmp", i);
+    /* file path in ubuntu */
+//    std::sprintf(file_name, "/home/young/文档/test_pics/bmp.for_as/bmp_for_all/color_classified/frame%04d.bmp", i);
+    /* file path in windows */
+    std::sprintf(file_name, "color_classified/frame%04d.bmp", i);
     qDebug() << file_name;
-    src = imread(file_name, 1);
+    src = imread(file_name);
     if( !src.data ){
 //        return -1;
         return ;
@@ -146,14 +149,6 @@ void findgate(int i)
     //后两个系数是前两个系数的再细化
     HoughLinesP(bw, lines, 1, CV_PI/180, 20, 20, 10);
     qDebug() << lines.size();
-    /* 初始化字体 */
-    CvFont font;
-    double hScale=1;
-    double vScale=1;
-    int lineWidth=2;// 相当于写字的线条
-//    scalar=CV_RGB(255,0,0);
-    cvInitFont(&font,CV_FONT_HERSHEY_SIMPLEX|CV_FONT_ITALIC, hScale,vScale,0,lineWidth);//初始化字体，准备写到图片上的
-    /**/
     vector<Vec4i >::iterator itc = lines.begin();
     int t = 0;
     kbline KbLine[50];
