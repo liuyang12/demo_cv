@@ -6,28 +6,34 @@
 #include "opencv2/highgui/highgui.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
 #include <iostream>
+#include <fstream>
 #include <stdio.h>
 #include <QDebug>
 using namespace std;
 using namespace cv;
 
-#define WIDTH 480
-#define HEIGHT 360
-#define COLOR_Orange  1*32
-#define	COLOR_Yellow  2*32
-#define	COLOR_Blue  3*32
-#define	COLOR_Green 4*32
-#define	COLOR_White  5*32
-#define	COLOR_Black  0
+#define WIDTH           480
+#define HEIGHT          360
+#define COLOR_Orange    1*32
+#define	COLOR_Yellow    2*32
+#define	COLOR_Blue      3*32
+#define	COLOR_Green     4*32
+#define	COLOR_White     5*32
+#define	COLOR_Black     0*32
 
-#define erosion_type MORPH_RECT     // 形态学矩形
-#define erosion_size 2              // kernel = 3*3
+#define erosion_type    MORPH_RECT  // 形态学矩形
+#define erosion_size    2           // kernel = 3*3
+#define theta_equal     6           // 角度阈值->相等 6°
+#define dist_equal      10          // 距离阈值->相等 10
+#define theta_vertical  15          // 角度阈值->垂直 15°
+#define dist_vertical   50          // 距离阈值->垂直 30
+
 
 #define START_NUM 00
 #define END_NUM 38     /* 根据读入的文件名进行修改/home/young/文档/test_pics/ball/level1/clear/frame*/
 
 struct kbline{  // line in Slope–intercept form
-  double k;
+  double theta; // 直线倾角 theta∈[0,90°)
   double b;
 };
 
@@ -47,6 +53,8 @@ void Dilation( int, void* );
 
 void thinning(const cv::Mat& src, cv::Mat& dst);
 void findgate(int i);
+void lineMerge(vector<Vec4i>* L);   // Merge line segment
+void findGatelines(vector<Vec4i>* L);   // find the lines of the gate
 
 int main(int argc, char *argv[])
 {
@@ -112,28 +120,363 @@ int main(int argc, char *argv[])
 //    return a.exec();
 }
 
+double thetaLine(Vec4i l)
+{
+    Point p1 = Point(l[0],l[1]);Point p2 = Point(l[2],l[3]);
+    double theta1 = atan(1.0*(p2.y-p1.y)/(p2.x-p1.x))*180.0/CV_PI;
+    return (theta1 > 0 ? theta1 : theta1+180);
+}
+double distPoint2Line(Point q, Vec4i l)
+{
+    Point p1 = Point(l[0],l[1]);Point p2 = Point(l[2],l[3]);
+    if(p2.x == p1.x)
+        return fabs(q.x - p1.x);
+    double k = 1.0*(p2.y-p1.y)/(p2.x-p1.x);
+    double b = 1.0*(p1.y*p2.x-p2.y*p1.x)/(p2.x-p1.x);
+    return ((k*q.x-q.y+b)/sqrt(k*k+1));
+}
+
+// calculate the score of two line segment l and m in terms of equal
+int equalScore(Vec4i l, Vec4i m)
+{
+    Point p1 = Point(l[0],l[1]);Point p2 = Point(l[2],l[3]);
+    Point q1 = Point(m[0],m[1]);Point q2 = Point(m[2],m[3]);
+    double theta1 = thetaLine(l);
+    double b1 = 1.0*(p1.y*p2.x-p2.y*p1.x)/(p2.x-p1.x);
+    double theta2 = thetaLine(m);
+    double b2 = 1.0*(q1.y*q2.x-q2.y*q1.x)/(q2.x-q1.x);
+    if(fabs(theta1 - theta2) <= theta_equal)    // 判断相等的角度
+    {
+        // 具有近似平行关系
+        if(fabs(distPoint2Line(q1, l)) <= dist_equal)   // 判断相等的距离
+            return 1;
+        else
+            return 0;
+    }
+    return 0;
+}
+double distPoint2Point(Point p, Point q)
+{
+    return (sqrt((p.x-q.x)*(p.x-q.x)+(p.y-q.y)*(p.y-q.y)));
+}
+double distLine2Line(Vec4i l, Vec4i m)
+{
+    Point p1 = Point(l[0],l[1]);Point p2 = Point(l[2],l[3]);
+    Point q1 = Point(m[0],m[1]);Point q2 = Point(m[2],m[3]);
+    if(p1.x > p2.x)   // p1 is in the left of p2
+    {
+        p1 = Point(l[2],l[3]);
+        p2 = Point(l[0],l[1]);
+    }
+    if(q1.x > q2.x)   // q1 is in the left of q2
+    {
+        q1 = Point(m[2],m[3]);
+        q2 = Point(m[0],m[1]);
+    }
+    if(min(p2.y, q2.y) - max(p1.y, q1.y) > 0)   // 两条线段相交
+        return 0;
+    double d1 = distPoint2Point(p1, q2);
+    double d2 = distPoint2Point(p2, q1);
+    double d3 = distPoint2Point(p1, q1);
+    double d4 = distPoint2Point(p2, q2);
+    d1 = d2 > d1 ? d1 : d2;
+    d3 = d4 > d3 ? d3 : d4;
+    return (d1 > d3 ? d3 : d1);
+}
+
+// calculate the score of two line segment l and m in terms of vertical s
+int verticalScore(Vec4i l, Vec4i m)
+{
+    Point p1 = Point(l[0],l[1]);Point p2 = Point(l[2],l[3]);
+    Point q1 = Point(m[0],m[1]);Point q2 = Point(m[2],m[3]);
+    double theta1 = thetaLine(l);
+    double b1 = 1.0*(p1.y*p2.x-p2.y*p1.x)/(p2.x-p1.x);
+    double theta2 = thetaLine(m);
+    double b2 = 1.0*(q1.y*q2.x-q2.y*q1.x)/(q2.x-q1.x);
+    if(fabs(fabs(theta1-theta2) - 90) <= theta_vertical)    // 判断垂直的角度
+    {
+        // 具有近似垂直关系
+        if(distLine2Line(l, m) <= dist_vertical)    // 判断垂直距离
+            return 1;
+        else
+            return 0;
+    }
+    return 0;
+}
+
+Vec4i extendLine(Vec4i l, Vec4i m)
+{
+    Point p1 = Point(l[0],l[1]), p2 = Point(l[2],l[3]);
+    Point q1 = Point(m[0],m[1]), q2 = Point(m[2],m[3]);
+    Vec4i n;
+
+    if(p1.x > p2.x)   // p1 is in the left of p2
+    {
+        p1 = Point(l[2],l[3]);
+        p2 = Point(l[0],l[1]);
+    }
+    if(q1.x > q2.x)   // q1 is in the left of q2
+    {
+        q1 = Point(m[2],m[3]);
+        q2 = Point(m[0],m[1]);
+    }
+    if(q1.x < p1.x)
+    {
+        n[0] = q1.x;
+        n[1] = q1.y;
+    }
+    else
+    {
+        n[0] = p1.x;
+        n[1] = p1.y;
+    }
+    if(q2.x < p2.x)
+    {
+        n[2] = p2.x;
+        n[3] = p2.y;
+    }
+    else
+    {
+        n[2] = q2.x;
+        n[3] = q2.y;
+    }
+    return n;
+}
+
+// Merge line segments
+void lineMerge(vector<Vec4i>* L)
+{
+    vector<Vec4i> lines = *L;
+    int i = 0;
+    bool merged = false;    // 出现合并
+    vector<Vec4i >::iterator itc = lines.begin();
+    i = 0;
+    while(itc != lines.end())
+    {
+        merged = false;
+        Vec4i l = *itc;
+        Point p1 = Point(l[0],l[1]), p2 = Point(l[2],l[3]);
+        // 删除图片边缘上得到的线段
+        if((p1.x==p2.x&&p1.x<=WIDTH&&p1.x>=WIDTH-3)||(p1.y==p2.y&&p1.y<=3)||(p1.x==p2.x&&p1.x<=3)||(p1.y==p2.y&&p1.y<=HEIGHT&&p1.y>=HEIGHT-3)){
+//            lines.erase(i);
+            itc = lines.erase(itc);
+            continue;
+        }
+        // 与之前的线段进行合并，默认之前的线段已经合并
+        for(int t=0;t<i;t++)
+        {
+            if(equalScore(lines[i], lines[t]) == 1)
+            {
+                lines[t] = extendLine(lines[i], lines[t]);
+                itc = lines.erase(itc);
+                merged = true;  // 出现合并
+                break;
+            }
+        }
+        if(merged)  // 出现合并则继续
+            continue;
+        ++itc;i++;
+    }
+    *L = lines;
+}
+// 重新定位门柱两条直线的端点，其中line2为中间线段
+void redefineline(Vec4i* line2, Vec4i* line1)
+{
+    Vec4i l = *line1;
+    Vec4i m = *line2;
+    Point p1 = Point(l[0],l[1]);Point p2 = Point(l[2],l[3]);    // line1
+    Point q1 = Point(m[0],m[1]);Point q2 = Point(m[2],m[3]);    // line2 - 中线
+    // line1: y = k1*x + b1, k1 = inf
+    double k1 = 1.0*(p2.y-p1.y)/(p2.x-p1.x);
+    double b1 = 1.0*(p1.y*p2.x-p2.y*p1.x)/(p2.x-p1.x);
+    // line2: y = k2*x + b2
+    double k2 = 1.0*(q2.y-q1.y)/(q2.x-q1.x);
+    double b2 = 1.0*(q1.y*q2.x-q2.y*q1.x)/(q2.x-q1.x);
+    double x0, y0;  // 交点 (x0, y0)
+    if(p2.x != p1.x)    // line1 不是竖直
+    {
+        // 交点 (x0, y0)
+        x0 = -(b2-b1)/(k2-k1);
+        y0 = (k2*b1-k1*b2)/(k2-k1);
+    }
+    else
+    {
+        // 交点 (x0, y0)
+        x0 = p2.x;
+        y0 = k2*x0 + b2;
+    }
+    if(p1.y < p2.y) // p1 is lower than p2
+    {
+        p2 = Point(l[0],l[1]);
+        p1 = Point(l[2],l[3]);
+    }
+    if(q1.x > q2.x) // q1 is in the left of q2
+    {
+        q1 = Point(m[2],m[3]);
+        q2 = Point(m[0],m[1]);
+    }
+    if((p1.x+p2.x)/2.0 < (q1.x+q2.x)/2) // 左边
+    {
+        p2 = Point(x0, y0);
+        q1 = Point(x0, y0);
+    }
+    else    // 右边
+    {
+        p2 = Point(x0, y0);
+        q2 = Point(x0, y0);
+    }
+    // 重新定义p1，即下点的位置，从上向下搜索直至出现非门柱颜色的点
+    if(p2.x != p1.x)    // line1 不是竖直
+    {
+        for(int y = p1.y;;y++)
+        {
+            int x = (y-b1)/k1;
+//            qDebug() << src.at<Vec3b>(y,x)[0];
+            if(src.at<Vec3b>(y,x)[0] != COLOR_White || x<=0 || x>=WIDTH || y<=0 || y>=HEIGHT)   // 白色球门
+            {
+                p1 = Point(x, y);
+                break;
+            }
+        }
+    }
+    else{
+        int x = p1.x;
+        for(int y = p1.y;;y++)
+        {
+//            qDebug() << src.at<Vec3b>(y,x)[0];
+            if(src.at<Vec3b>(y,x)[0] != COLOR_White || x<=0 || x>=WIDTH || y<=0 || y>=HEIGHT)   // 白色球门
+            {
+                p1 = Point(x, y);
+                break;
+            }
+        }
+    }
+    l[0] = p1.x; l[1] = p1.y;
+    l[2] = p2.x; l[3] = p2.y;
+    m[0] = q1.x; m[1] = q1.y;
+    m[2] = q2.x; m[3] = q2.y;
+    *line1 = l;
+    *line2 = m;
+}
+
+// 找门柱所在的线
+void findGatelines(vector<Vec4i>* L)
+{
+    vector<Vec4i> lines;
+    Vec4i line1;
+    Vec4i line2;    // 中间的线段
+    Vec4i line3;
+    line3[0] = 0; line3[1] = 0; line3[2] = 0; line3[3] = 0;
+    lines = *L;
+    int i = 0;
+    bool isGateline = false;    // 出现门柱线
+    bool isSecondGateline = false;  // 第二个门柱线
+    vector<Vec4i >::iterator itc = lines.begin();
+    i = 0;
+    while(itc != lines.end())
+    {
+        line3[0] = 0; line3[1] = 0; line3[2] = 0; line3[3] = 0;
+        isGateline = false;
+        isSecondGateline = false;  // 第二个门柱线
+        Vec4i l = *itc;
+        Point p1 = Point(l[0],l[1]), p2 = Point(l[2],l[3]);
+        // 遍历所有线段
+        int t = 0;
+        for(t=0;t<lines.size();t++)
+        {
+            if(t == i)
+                continue;
+            if(verticalScore(lines[i], lines[t]) == 1)
+            {
+                isGateline = true;  // 出现门柱线
+                double theta1 = thetaLine(lines[i]);
+                double theta2 = thetaLine(lines[t]);
+                if(theta1 + theta2 > 180)
+                {
+                    if(theta1 > theta2) {
+                        line2 = lines[i];   // 中间的线段
+                        line1 = lines[t];   // 一条边线
+    //                    lines[i] = line1;
+    //                    lines[t] = line2;
+                    }
+                    else {
+                        line2 = lines[t];   // 中间的线段
+                        line1 = lines[i];   // 一条边线
+                    }
+                }
+                else
+                {
+                    if(theta1 < theta2) {
+                        line2 = lines[i];   // 中间的线段
+                        line1 = lines[t];   // 一条边线
+    //                    lines[i] = line1;
+    //                    lines[t] = line2;
+                    }
+                    else {
+                        line2 = lines[t];   // 中间的线段
+                        line1 = lines[i];   // 一条边线
+                    }
+                }
+                int j = 0;
+                for(j = 0; j < lines.size(); j++)
+                {
+                    if(j == i || j == t)
+                        continue;
+                    if(verticalScore(lines[j], line2) == 1)
+                    {
+                        line3 = lines[j];   // 另一条边线
+                        isSecondGateline = true;
+                        break;
+                    }
+                }
+                redefineline(&line2, &line1);
+                if(line3[0] > 0)
+                    redefineline(&line2, &line3);
+                lines[i] = line1;
+                lines[t] = line2;
+                if(isSecondGateline)
+                    lines[j] = line3;
+                break;
+            }
+        }
+        if(isGateline)  // 出现合并则继续
+        {
+            ++itc;i++;
+            continue; // break;
+        }
+        else    // 构成门柱线
+        {
+            itc = lines.erase(itc);
+        }
+    }
+    *L = lines;
+}
+
 void findgate(int i)
 {
-    char file_name[256], source_name[127], thinned_name[127], txt[127];
+    char file_name[256], source_name[127], thinned_name[127], txt[127], data_name[127], num[63];
 //    if(i > END_NUM)
 //        i = END_NUM;
     /* file path in ubuntu */
 //    std::sprintf(file_name, "/home/young/文档/test_pics/bmp.for_as/bmp_for_all/color_classified/frame%04d.bmp", i);
     /* file path in windows */
     std::sprintf(file_name, "color_classified/frame%04d.bmp", i);
+    std::sprintf(data_name, "data\\frame%04d.txt", i);
+    ofstream data(data_name);
+//    data << file_name << endl;
     qDebug() << file_name;
     src = imread(file_name);
     if( !src.data ){
 //        return -1;
         return ;
     }
-    qDebug() << src.rows << "*" << src.cols;
+//    qDebug() << src.rows << "*" << src.cols;
     cv::Mat bw, draw;
     cv::cvtColor(src, bw, CV_BGR2GRAY);
     cv::threshold(bw, bw, COLOR_Green+2, 255, CV_THRESH_BINARY);
     std::sprintf(source_name, "source image - frame%04d.bmp",i);
     std::sprintf(thinned_name, "thinned image - frame%04d.bmp",i);
-
+    std::sprintf(num, "%4d.bmp", i);
     Mat element = getStructuringElement( erosion_type,
                                          Size( 2*erosion_size + 1, 2*erosion_size+1 ),
                                          Point( erosion_size, erosion_size ) );
@@ -148,6 +491,8 @@ void findgate(int i)
     //50代表将要返回的线段的最小长度，10代表能连成1条直线的线段最多能分隔的像素点数
     //后两个系数是前两个系数的再细化
     HoughLinesP(bw, lines, 1, CV_PI/180, 20, 20, 10);
+    lineMerge(&lines);      // 合并线段
+    findGatelines(&lines);  // 找门柱线
     qDebug() << lines.size();
     vector<Vec4i >::iterator itc = lines.begin();
     int t = 0;
@@ -156,31 +501,38 @@ void findgate(int i)
     {
         Vec4i l = *itc;
         Point p1 = Point(l[0],l[1]), p2 = Point(l[2],l[3]);
-        if((p1.x==p2.x&&p1.x<=WIDTH&&p1.x>=WIDTH-3)||(p1.y==p2.y&&p1.y<=3)||(p1.x==p2.x&&p1.x<=3)||(p1.y==p2.y&&p1.y<=HEIGHT&&p1.y>=HEIGHT-3)){
-//            lines.erase(i);
-            itc = lines.erase(itc);
-            continue;
-        }
-        KbLine[t].k = 1.0*(p2.y-p1.y)/(p2.x-p1.x);
+//        if((p1.x==p2.x&&p1.x<=WIDTH&&p1.x>=WIDTH-3)||(p1.y==p2.y&&p1.y<=3)||(p1.x==p2.x&&p1.x<=3)||(p1.y==p2.y&&p1.y<=HEIGHT&&p1.y>=HEIGHT-3)){
+////            lines.erase(i);
+//            itc = lines.erase(itc);
+//            continue;
+//        }
+//        cvRound();
+        KbLine[t].theta = thetaLine(l);
         KbLine[t].b = 1.0*(p1.y*p2.x-p2.y*p1.x)/(p2.x-p1.x);
         qDebug()<<t<<"("<<(*itc)[0]<<","<<(*itc)[1]<<")->("<<(*itc)[2]<<","<<(*itc)[3]<<")";
-        qDebug() << "  (k,b)=(" <<KbLine[t].k << "," << KbLine[t].b << ")";
+        qDebug() << "  (theta,b)=(" <<KbLine[t].theta << "°," << KbLine[t].b << ")";
+        data << KbLine[t].theta << " " << KbLine[t].b << endl;
         line(src, p1, p2, Scalar(0,0,255), 3);
         line(draw, p1, p2, Scalar(0,0,255),1);
+        circle(src, p1, 3, Scalar(0,255,0), 3);
+        circle(src, p2, 3, Scalar(0,255,0), 3);
+        circle(draw, p1, 3, Scalar(0,255,0), 3);
+        circle(draw, p2, 3, Scalar(0,255,0), 3);
         std::sprintf(txt, "%d", t);
         cv::putText(draw, txt, p1, CV_FONT_HERSHEY_PLAIN, 1, Scalar(255, 0, 0));
 //        cv::cvPutText(draw, txt, p1, &font, Scalar(255,0,0));
 //        line(draw, Point(0,0), Point(100,300), Scalar(255,0,0), 3);
         ++itc;t++;
     }
-    for(size_t t=0; t<lines.size(); t++){
-        Vec4i l = lines[t];
-
-
-    }
     /***/
     namedWindow("source image", CV_WINDOW_AUTOSIZE);
     namedWindow("thinned image", CV_WINDOW_AUTOSIZE);
+    moveWindow("source image", 0, 0);
+    moveWindow("thinned image", 0, 360+20);
+//    displayOverlay("source image", source_name, 10000);
+//    displayOverlay("thinned image", thinned_name, 10000);
+    cv::putText(src, num, Point(WIDTH/2-100, 30), CV_FONT_HERSHEY_SIMPLEX, 1, Scalar(0, 255, 255));
+    cv::putText(draw, num, Point(WIDTH/2-100, 30), CV_FONT_HERSHEY_SIMPLEX, 1, Scalar(0, 255, 255));
     cv::imshow("source image", src);
     cv::imshow("thinned image", draw);
 //    waitKey();

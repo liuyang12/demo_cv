@@ -15,11 +15,11 @@ TEMPLATE = app
 SOURCES += main.cpp\
         demo_cv.cpp
 
-INCLUDEPATH += /usr/include \
-               /usr/include/opencv \
-               /usr/include/opencv2
-
 ## current opencv version 2.4.8 - ubuntu
+#INCLUDEPATH += /usr/include \
+#               /usr/include/opencv \
+#               /usr/include/opencv2
+
 #LIBS += /usr/lib/x86_64-linux-gnu/libopencv_highgui.so \
 #        /usr/lib/x86_64-linux-gnu/libopencv_core.so \
 #        /usr/lib/x86_64-linux-gnu/libopencv_imgproc.so
